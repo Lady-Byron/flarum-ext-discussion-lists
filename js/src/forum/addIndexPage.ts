@@ -1,9 +1,9 @@
 import app from 'flarum/forum/app';
 import type Mithril from 'mithril';
-import {extend, override} from 'flarum/common/extend';
-import {ApiPayloadSingle} from 'flarum/common/Store';
+import { extend, override } from 'flarum/common/extend';
+import { ApiPayloadSingle } from 'flarum/common/Store';
 import Discussion from 'flarum/common/models/Discussion';
-import {ComponentAttrs} from 'flarum/common/Component';
+import { ComponentAttrs } from 'flarum/common/Component';
 import IndexPage from 'flarum/forum/components/IndexPage';
 import DiscussionListState from 'flarum/forum/states/DiscussionListState';
 import GlobalSearchState from 'flarum/forum/states/GlobalSearchState';
@@ -16,209 +16,228 @@ import ListModel from './models/DiscussionList';
 
 // Implementation based on Tag's addTagFilter
 export default function () {
-    IndexPage.prototype.currentList = function () {
-        if (this.currentActiveList) {
-            return this.currentActiveList;
-        }
+  IndexPage.prototype.currentList = function () {
+    if (this.currentActiveList) {
+      return this.currentActiveList;
+    }
 
-        const id = app.search.params().list;
+    const id = app.search.params().list;
 
-        if (!id) {
-            return null;
-        }
+    if (!id) {
+      return null;
+    }
 
-        const list = app.store.getById<ListModel>('discussion-lists', id);
+    const list = app.store.getById<ListModel>('discussion-lists', id);
 
-        // Check that the user() relationship is loaded, otherwise request full load
-        // Since the user is not nullable this should work reliably
-        if (list && list.user()) {
-            this.currentActiveList = list;
-            return this.currentActiveList;
-        }
+    // Check that the user() relationship is loaded, otherwise request full load
+    // Since the user is not nullable this should work reliably
+    if (list && list.user()) {
+      this.currentActiveList = list;
+      return this.currentActiveList;
+    }
 
-        if (this.currentListLoading) {
-            return null;
-        }
+    if (this.currentListLoading) {
+      return null;
+    }
 
-        this.currentListLoading = true;
+    this.currentListLoading = true;
 
-        app.store
-            .find<ListModel>('discussion-lists', id)
-            .then(list => {
-                this.currentActiveList = list;
+    app.store
+      .find<ListModel>('discussion-lists', id)
+      .then((list) => {
+        this.currentActiveList = list;
 
-                m.redraw();
-            })
-            .finally(() => {
-                this.currentListLoading = false;
-            });
+        m.redraw();
+      })
+      .finally(() => {
+        this.currentListLoading = false;
+      });
 
-        return null;
+    return null;
+  };
+
+  override(IndexPage.prototype, 'hero', function (original) {
+    const list = this.currentList();
+
+    if (!list) {
+      return original();
+    }
+
+    return m(ListHero, {
+      list,
+    });
+  });
+
+  extend(IndexPage.prototype, 'view', function (vdom: Mithril.Vnode<ComponentAttrs, {}>) {
+    const list = this.currentList();
+
+    if (!list) return;
+
+    // 安全地拼接 className，避免 undefined + '...' 的情况
+    const prev = (vdom.attrs as any).className || '';
+    const extra = 'IndexPage--list' + list.id();
+    (vdom.attrs as any).className = prev ? prev + ' ' + extra : extra;
+  });
+
+  extend(IndexPage.prototype, 'setTitle', function () {
+    const list = this.currentList();
+
+    if (list) {
+      app.setTitle(list.name());
+    }
+  });
+
+  extend(GlobalSearchState.prototype, 'params', function (params) {
+    params.list = m.route.param('list');
+  });
+
+  extend(DiscussionListState.prototype, 'requestParams', function (this: DiscussionListState, params) {
+    if (this.params.list) {
+      const filter: any = params.filter ?? {};
+      filter.list = this.params.list;
+      const q = filter.q;
+      if (q) {
+        filter.q = `${q} list:${this.params.list}`;
+      }
+      params.filter = filter;
+
+      // Push page limit to the maximum to allow for manual sorting
+      const page = params.page ?? {};
+      page.limit = 50;
+      params.page = page;
+    }
+  });
+
+  override(DiscussionListState.prototype, 'sortMap', function (this: DiscussionListState, original) {
+    const originalMap = original();
+
+    if (!this.params.list) {
+      return originalMap;
+    }
+
+    const newList: any = {
+      discussionListDefault: '',
     };
 
-    override(IndexPage.prototype, 'hero', function (original) {
-        const list = this.currentList();
-
-        if (!list) {
-            return original();
-        }
-
-        return m(ListHero, {
-            list,
-        });
+    Object.keys(originalMap).forEach((key) => {
+      if (originalMap[key]) {
+        newList[key] = originalMap[key];
+      }
     });
 
-    extend(IndexPage.prototype, 'view', function (vdom: Mithril.Vnode<ComponentAttrs, {}>) {
-        const list = this.currentList();
+    return newList;
+  });
 
-        if (!list) {
-            return;
-        }
+  override(DiscussionList.prototype, 'view', function (this: any, original) {
+    const vdom = original() as any;
 
-        (vdom.attrs as any).className += ' IndexPage--list' + list.id();
+    const state = this.attrs.state as DiscussionListState;
+
+    // If not on the lists page, change nothing
+    // Same if a manual sort has been applied to the page
+    if (!state.getParams().list || state.getParams().sort) {
+      return vdom;
+    }
+
+    const list = app.store.getById<ListModel>('discussion-lists', state.getParams().list);
+
+    if (!list || list.ordering() !== 'manual' || !list.canEdit()) {
+      return vdom;
+    }
+
+    // ---- 修复点 1：严格判定 feed 形态，避免空值穿透 ----
+    const feed = Array.isArray(vdom?.children) ? vdom.children[0] : undefined;
+
+    if (!feed || !feed.attrs || feed.attrs.role !== 'feed') {
+      return vdom;
+    }
+
+    const sortableChildren: any = [];
+
+    // We need to flatten the children for use in Sortable
+    const feedChildren = Array.isArray(feed.children) ? feed.children : [];
+
+    feedChildren.forEach((child: any) => {
+      if (!child) return;
+
+      if (child.tag === '[') {
+        sortableChildren.push(...child.children);
+      } else {
+        sortableChildren.push(child);
+      }
     });
 
-    extend(IndexPage.prototype, 'setTitle', function () {
-        const list = this.currentList();
+    // ---- 修复点 2：className 安全处理并替换所有空格为点 ----
+    const cls = String(feed.attrs?.className || '').trim().replace(/\s+/g, '.');
+    const containerTag = 'ul[role=feed][aria-busy=false]' + (cls ? '.' + cls : '');
 
-        if (list) {
-            app.setTitle(list.name());
-        }
-    });
+    return m(
+      'div',
+      {
+        className: vdom.attrs.className,
+      },
+      {
+        // Manually build the component for Sortable in the vdom
+        // So we can apply the existing children
+        tag: Sortable,
+        attrs: {
+          containerTag,
+          placeholderTag: 'li.DiscussionListSortablePlaceholder',
+          onsort(origin: number, destination: number) {
+            const allVisibleDiscussions: Discussion[] = ([] as Discussion[]).concat(
+              ...state.getPages().map((page) => {
+                return page.items;
+              })
+            );
 
-    extend(GlobalSearchState.prototype, 'params', function (params) {
-        params.list = m.route.param('list');
-    });
+            const discussion = allVisibleDiscussions[origin];
 
-    extend(DiscussionListState.prototype, 'requestParams', function (this: DiscussionListState, params) {
-        if (this.params.list) {
-            const filter: any = params.filter ?? {};
-            filter.list = this.params.list;
-            const q = filter.q;
-            if (q) {
-                filter.q = `${q} list:${this.params.list}`;
+            if (discussion && list) {
+              app
+                .request<ApiPayloadSingle>({
+                  url: app.forum.attribute('apiUrl') + '/discussion-lists/' + list.id() + '/discussions/' + discussion.id(),
+                  method: 'POST',
+                  body: {
+                    data: {
+                      attributes: {
+                        order: destination + 1, // 0-based to 1-based
+                      },
+                    },
+                  },
+                })
+                .then((payload) => {
+                  // Might not be necessary but we might as well do it in case you navigate back to a page that shows a summary with the discussion relationship
+                  app.store.pushPayload(payload);
+
+                  // This is a bit excessive to refresh the full list here but this is the easiest implementation
+                  app.discussions.refresh();
+                });
             }
-            params.filter = filter;
+          },
+        },
+        children: sortableChildren,
+      }
+    );
+  });
 
-            // Push page limit to the maximum to allow for manual sorting
-            const page = params.page ?? {};
-            page.limit = 50;
-            params.page = page;
-        }
-    });
+  // contentItems is available since Flarum 1.8.6（你在 1.8.10，无需额外兼容）
+  extend(DiscussionListItem.prototype, 'contentItems', function (items) {
+    if (!this.attrs.params.list || this.attrs.params.sort) {
+      return;
+    }
 
-    override(DiscussionListState.prototype, 'sortMap', function (this: DiscussionListState, original) {
-        const originalMap = original();
+    const list = app.store.getById<ListModel>('discussion-lists', this.attrs.params.list);
 
-        if (!this.params.list) {
-            return originalMap;
-        }
+    if (!list || list.ordering() !== 'manual' || !list.canEdit()) {
+      return;
+    }
 
-        const newList: any = {
-            discussionListDefault: '',
-        };
-
-        Object.keys(originalMap).forEach(key => {
-            if (originalMap[key]) {
-                newList[key] = originalMap[key];
-            }
-        });
-
-        return newList;
-    });
-
-    override(DiscussionList.prototype, 'view', function (this: any, original) {
-        const vdom = original() as any;
-
-        const state = this.attrs.state as DiscussionListState;
-
-        // If not on the lists page, change nothing
-        // Same if a manual sort has been applied to the page
-        if (!state.getParams().list || state.getParams().sort) {
-            return vdom;
-        }
-
-        const list = app.store.getById<ListModel>('discussion-lists', state.getParams().list);
-
-        if (!list || list.ordering() !== 'manual' || !list.canEdit()) {
-            return vdom;
-        }
-
-        // If the vdom doesn't look like a fully rendered feed, keep is like original
-        if (!vdom.children.length || !vdom.children[0] && !vdom.children[0].attrs && vdom.children[0].attrs.role !== 'feed') {
-            return vdom;
-        }
-
-        const sortableChildren: any = [];
-
-        // We need to flatten the children for use in Sortable
-        vdom.children[0].children.forEach(child => {
-            if (!child) {
-                return;
-            }
-
-            if (child.tag === '[') {
-                sortableChildren.push(...child.children);
-            } else {
-                sortableChildren.push(child);
-            }
-        });
-
-        return m('div', {
-            className: vdom.attrs.className,
-        }, {
-            // Manually build the component for Sortable in the vdom
-            // So we can apply the existing children
-            tag: Sortable,
-            attrs: {
-                containerTag: 'ul[role=feed][aria-busy=false].' + (vdom.children[0].attrs.className).replace(' ', '.'),
-                placeholderTag: 'li.DiscussionListSortablePlaceholder',
-                onsort(origin: number, destination: number) {
-                    const allVisibleDiscussions: Discussion[] = ([] as Discussion[]).concat(...state.getPages().map(page => {
-                        return page.items;
-                    }));
-
-                    const discussion = allVisibleDiscussions[origin];
-
-                    if (discussion && list) {
-                        app.request<ApiPayloadSingle>({
-                            url: app.forum.attribute('apiUrl') + '/discussion-lists/' + list.id() + '/discussions/' + discussion.id(),
-                            method: 'POST',
-                            body: {
-                                data: {
-                                    attributes: {
-                                        order: destination + 1, // 0-based to 1-based
-                                    },
-                                },
-                            },
-                        }).then(payload => {
-                            // Might not be necessary but we might as well do it in case you navigate back to a page that shows a summary with the discussion relationship
-                            app.store.pushPayload(payload);
-
-                            // This is a bit excessive to refresh the full list here but this is the easiest implementation
-                            app.discussions.refresh();
-                        });
-                    }
-                },
-            },
-            children: sortableChildren,
-        });
-    });
-
-    // contentItems is available since Flarum 1.8.6
-    extend(DiscussionListItem.prototype, 'contentItems', function (items) {
-        if (!this.attrs.params.list || this.attrs.params.sort) {
-            return;
-        }
-
-        const list = app.store.getById<ListModel>('discussion-lists', this.attrs.params.list);
-
-        if (!list || list.ordering() !== 'manual' || !list.canEdit()) {
-            return;
-        }
-
-        items.add('discussion-lists-sort', m(SortableHandle, {
-            className: 'DiscussionListSortableHandle',
-        }), 200);
-    });
+    items.add(
+      'discussion-lists-sort',
+      m(SortableHandle, {
+        className: 'DiscussionListSortableHandle',
+      }),
+      200
+    );
+  });
 }
