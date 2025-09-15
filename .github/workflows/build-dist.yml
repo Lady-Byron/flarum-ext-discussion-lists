@@ -33,29 +33,35 @@ jobs:
       - name: Detect entrypoints (forum required, admin optional)
         id: detect
         run: |
-          if [ -f js/forum.js ]; then
+          # forum: allow .js or .ts
+          if [ -f js/forum.js ] || [ -f js/forum.ts ]; then
             echo "HAS_FORUM=true" >> $GITHUB_ENV
+            if [ -f js/forum.js ]; then
+              echo "FORUM_ENTRY=js/forum.js" >> $GITHUB_ENV
+            else
+              echo "FORUM_ENTRY=js/forum.ts" >> $GITHUB_ENV
+            fi
           else
-            echo "::error::Missing js/forum.js entry. See Flarum frontend docs."
+            echo "::error::Missing js/forum.{js,ts} entry. Create one that re-exports from ./src/forum"
             exit 1
           fi
 
-          if [ -f js/admin.js ]; then
+          # admin: optional (.js or .ts)
+          if [ -f js/admin.js ] || [ -f js/admin.ts ]; then
             echo "HAS_ADMIN=true" >> $GITHUB_ENV
           else
             echo "HAS_ADMIN=false" >> $GITHUB_ENV
-            echo "::warning::js/admin.js not found; admin bundle will be skipped/asserted accordingly."
+            echo "::notice::js/admin.{js,ts} not found; admin bundle will be skipped."
           fi
 
-          # 建议 forum 端入口实现为 .tsx（含 JSX）
-          if [ ! -f js/src/forum/index.tsx ] && [ -f js/src/forum/index.ts ]; then
-            echo "::warning::js/src/forum/index.ts found; if it contains JSX, rename to .tsx to avoid build surprises."
+          # Heads-up for JSX in TS
+          if [ -f js/src/forum/index.ts ] && grep -q "<" js/src/forum/index.ts 2>/dev/null; then
+            echo "::warning::js/src/forum/index.ts may contain JSX; prefer .tsx to avoid tooling quirks."
           fi
 
       - name: Install deps
         working-directory: js
         run: |
-          # 优先使用锁文件；没有锁也能正常装
           if [ -f package-lock.json ]; then
             npm ci
           else
@@ -79,11 +85,7 @@ jobs:
           if [ "${{ env.HAS_ADMIN }}" = "true" ]; then
             test -f js/dist/admin.js || { echo "::error::js/dist/admin.js not found after build (admin entry exists)"; exit 1; }
           else
-            if [ -f js/dist/admin.js ]; then
-              echo "::notice::admin bundle exists even though js/admin.js was not detected — ok but unexpected."
-            else
-              echo "::notice::Skipping admin dist assertion."
-            fi
+            echo "::notice::Skipping admin dist assertion."
           fi
 
       - name: Commit dist (force add even if ignored)
